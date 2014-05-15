@@ -14,20 +14,20 @@ namespace CircuitBreaker
 
 		public virtual void ProtectedCodeIsAboutToBeCalled() { }
 		public virtual void ProtectedCodeHasBeenCalled() { }
-		public virtual void ActUponException(Exception e) { circuitBreaker.IncreaseFailureCount(); }
+		public virtual void ActUponException(Exception e) { circuitBreaker.RecordFailure(); }
 	}
 
 	public class ClosedState : CircuitBreakerState
 	{
 		public ClosedState(CircuitBreaker circuitBreaker) : base(circuitBreaker)
 		{
-			circuitBreaker.ResetFailureCount();
+			circuitBreaker.ResetFailures();
 		}
 
 		public override void ActUponException(Exception e)
 		{
 			base.ActUponException(e);
-			if (circuitBreaker.ThresholdReached()) circuitBreaker.MoveToOpenState();
+			if (circuitBreaker.ThresholdReached) circuitBreaker.MoveToOpenState();
 		}
 	}
 
@@ -38,14 +38,9 @@ namespace CircuitBreaker
 		public OpenState(CircuitBreaker circuitBreaker) : base(circuitBreaker)
 		{
 			timer = new Timer(circuitBreaker.Timeout.TotalMilliseconds);
-			timer.Elapsed += TimeoutHasBeenReached;
+            timer.Elapsed += (sender, e) => circuitBreaker.MoveToHalfOpenState();
 			timer.AutoReset = false;
 			timer.Start();
-		}
-
-		private void TimeoutHasBeenReached(object sender, ElapsedEventArgs e)
-		{
-			circuitBreaker.MoveToHalfOpenState();
 		}
 
 		public override void ProtectedCodeIsAboutToBeCalled()

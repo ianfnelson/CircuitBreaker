@@ -1,18 +1,25 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace CircuitBreaker
 {
-	public class CircuitBreaker
+	public class CircuitBreaker : ICircuitBreaker
 	{
+	    private readonly List<DateTime> failures; 
 		private readonly object monitor = new object();
 		private CircuitBreakerState state;
 
-		public CircuitBreaker(int threshold, TimeSpan timeout)
+		public CircuitBreaker(int threshold, TimeSpan period, TimeSpan timeout)
 		{
 			if (threshold < 1)
 			{
 				throw new ArgumentOutOfRangeException("threshold", "Threshold should be greater than 0");
 			}
+
+            if (period.TotalMilliseconds < 1)
+            {
+                throw new ArgumentOutOfRangeException("period", "Period should be greater than 0");
+            }
 
 			if (timeout.TotalMilliseconds < 1)
 			{
@@ -20,13 +27,34 @@ namespace CircuitBreaker
 			}
 
 			Threshold = threshold;
+		    Period = period;
 			Timeout = timeout;
+            failures = new List<DateTime>();
 			MoveToClosedState();
 		}
 
-		public int Failures { get; private set; }
+        public IList<DateTime> Failures
+        {
+            get
+            {
+                // Remove log of any failed invocations that occurred earlier than period in which we are interested.
+                failures.RemoveAll(f => f < TimeProvider.Current.UtcNow - Period);
+
+                return failures;
+            }
+        }
+
 		public int Threshold { get; private set; }
+        public TimeSpan Period { get; private set; }
 		public TimeSpan Timeout { get; private set; }
+
+        internal bool ThresholdReached
+        {
+            get
+            {
+                return Failures.Count >= Threshold;
+            }
+        }
 
 		public bool IsClosed
 		{
@@ -58,19 +86,14 @@ namespace CircuitBreaker
 			state = new HalfOpenState(this);
 		}
 
-		internal void IncreaseFailureCount()
+		internal void RecordFailure()
 		{
-			Failures++;
+            failures.Add(TimeProvider.Current.UtcNow);
 		}
 
-		internal void ResetFailureCount()
+		internal void ResetFailures()
 		{
-			Failures = 0;
-		}
-
-		public bool ThresholdReached()
-		{
-			return Failures >= Threshold;
+            failures.Clear();
 		}
 
 		public void AttemptCall(Action protectedCode)
@@ -103,6 +126,7 @@ namespace CircuitBreaker
 		{
 			using (TimedLock.Lock(monitor))
 			{
+			    ResetFailures();
 				MoveToClosedState();
 			}
 		}

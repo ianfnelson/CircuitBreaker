@@ -1,207 +1,311 @@
 ﻿using System;
 using System.Threading;
-
+using FluentAssertions;
 using NUnit.Framework;
+using Rhino.Mocks;
 
 namespace CircuitBreaker.Tests
 {
-	[TestFixture]
-	public class CircuitBreakerTests
-	{
-		private static void DummyCall() {}
+    [TestFixture]
+    public class CircuitBreakerTests
+    {
+        [TearDown]
+        public void TearDown()
+        {
+            // Reset ambient context to default providers.
+            TimeProvider.ResetToDefault();
+        }
 
-		private static void AssertThatExceptionIsThrown<T>(Action code) where T : Exception
-		{
-			try
-			{
-				code();
-			}
-			catch (T)
-			{
-				return;
-			}
+        private static void CallMultipleTimes(Action codeToCall, int timesToCall)
+        {
+            for (int i = 0; i < timesToCall; i++)
+            {
+                codeToCall();
+            }
+        }
 
-			Assert.Fail("Expected exception of type {0} was not thrown", typeof(T).FullName);
-		}
+        [Test]
+        public void AttemptCallCallsProtectedCode()
+        {
+            // Arrange
+            bool protectedCodeWasCalled = false;
+            Action protectedCode = () => protectedCodeWasCalled = true;
 
-		private static void CallXAmountOfTimes(Action codeToCall, int timesToCall)
-		{
-			for (int i = 0; i < timesToCall; i++)
-			{
-				codeToCall();
-			}
-		}
+            var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
 
-		[Test]
-		public void AttemptCallCallsProtectedCode()
-		{
-			bool protectedCodeWasCalled = false;
-			Action protectedCode = () => protectedCodeWasCalled = true;
+            // Act
+            circuitBreaker.AttemptCall(protectedCode);
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5));
-			circuitBreaker.AttemptCall(protectedCode);
-			Assert.That(protectedCodeWasCalled);
-		}
+            // Assert
+            Assert.That(protectedCodeWasCalled);
+        }
 
-		[Test]
-		public void FailuresIsNotIncreasedWhenProtectedCodeSucceeds()
-		{
-			Action protectedCode = () => { return; };
+        [Test]
+        public void ConstructorPopulatesCircuitBreakerProperties()
+        {
+            // Arrange
+            const int threshold = 123;
+            TimeSpan period = TimeSpan.FromMinutes(23);
+            TimeSpan timeout = TimeSpan.FromMilliseconds(456);
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5));
-			circuitBreaker.AttemptCall(protectedCode);
-			Assert.AreEqual(0, circuitBreaker.Failures);
-		}
+            // Act
+            var circuitBreaker = new CircuitBreaker(threshold, period, timeout);
 
-		[Test]
-		public void ConstructorWithInvalidThresholdThrowsException()
-		{
-			AssertThatExceptionIsThrown<ArgumentOutOfRangeException>(
-				() => new CircuitBreaker(0, TimeSpan.FromMinutes(5)));
-			AssertThatExceptionIsThrown<ArgumentOutOfRangeException>(
-				() => new CircuitBreaker(-1, TimeSpan.FromMinutes(5)));
-		}
+            // Assert
+            Assert.That(circuitBreaker.Period, Is.EqualTo(period));
+            Assert.That(circuitBreaker.Threshold, Is.EqualTo(threshold));
+            Assert.That(circuitBreaker.Timeout, Is.EqualTo(timeout));
+        }
 
-		[Test]
-		public void ConstructorWithInvalidTimeoutThrowsException()
-		{
-			AssertThatExceptionIsThrown<ArgumentOutOfRangeException>(
-				() => new CircuitBreaker(10, TimeSpan.Zero));
-			AssertThatExceptionIsThrown<ArgumentOutOfRangeException>(
-				() => new CircuitBreaker(10, TimeSpan.FromMilliseconds(-1)));
-		}
+        [TestCase(0)]
+        [TestCase(-1)]
+        public void ConstructorWithInvalidPeriodThrowsException(int milliseconds)
+        {
+            // Act
+            var ex =
+                Assert.Throws<ArgumentOutOfRangeException>(
+                    () => new CircuitBreaker(10, TimeSpan.FromMilliseconds(milliseconds), TimeSpan.FromMinutes(5)));
 
-		[Test]
-		public void FailuresIncreasesWhenProtectedCodeFails()
-		{
-			Action protectedCode = () => { throw new ApplicationException("blah"); };
+            // Assert
+            Assert.That(ex.ParamName, Is.EqualTo("period"));
+        }
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5));
-			Assert.AreEqual(0, circuitBreaker.Failures);
-			AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode));
-			Assert.AreEqual(1, circuitBreaker.Failures);
-		}
+        [TestCase(0)]
+        [TestCase(-1)]
+        public void ConstructorWithInvalidThresholdThrowsException(int threshold)
+        {
+            // Act
+            var ex =
+                Assert.Throws<ArgumentOutOfRangeException>(
+                    () => new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5)));
 
-		[Test]
-		public void NewCircuitBreakerIsClosed()
-		{
-			var circuitBreaker = new CircuitBreaker(5, TimeSpan.FromMinutes(5));
-			Assert.That(circuitBreaker.IsClosed);
-		}
+            // Assert
+            Assert.That(ex.ParamName, Is.EqualTo("threshold"));
+        }
 
-		[Test]
-		public void OpensWhenThresholdIsReached()
-		{
-			Action protectedCode = () => { throw new ApplicationException("blah"); };
+        [TestCase(0)]
+        [TestCase(-1)]
+        public void ConstructorWithInvalidTimeoutThrowsException(int milliseconds)
+        {
+            // Act
+            var ex =
+                Assert.Throws<ArgumentOutOfRangeException>(
+                    () => new CircuitBreaker(10, TimeSpan.FromMinutes(5), TimeSpan.FromMilliseconds(milliseconds)));
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), 10);
-			Assert.That(circuitBreaker.IsOpen);
-		}
+            // Assert
+            Assert.That(ex.ParamName, Is.EqualTo("timeout"));
+        }
 
-		[Test]
-		public void TestConstructorWithValidArguments()
-		{
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5));
-			Assert.AreEqual(10, circuitBreaker.Threshold);
-			Assert.AreEqual(TimeSpan.FromMinutes(5), circuitBreaker.Timeout);
-		}
+        [Test]
+        public void DoesNotOpenIfThresholdReachedOutsideOfPeriod()
+        {
+            // Arrange
+            Action protectedCode = () => { throw new ApplicationException("blah"); };
 
-		[Test]
-		public void ThrowsOpenCircuitExceptionWhenCallIsAttemptedIfCircuitBreakerIsOpen()
-		{
-			Action protectedCode = () => { throw new ApplicationException("blah"); };
+            const int threshold = 10;
+            TimeSpan period = TimeSpan.FromMilliseconds(50);
+            var circuitBreaker = new CircuitBreaker(threshold, period, TimeSpan.FromMinutes(5));
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), 10);
-			AssertThatExceptionIsThrown<OpenCircuitException>(() => circuitBreaker.AttemptCall(protectedCode));
-		}
+            // Act
+            CallMultipleTimes(
+                () => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)),
+                threshold - 1);
+            Thread.Sleep(TimeSpan.FromMilliseconds(100));
+            CallMultipleTimes(
+                () => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)),
+                threshold - 1);
 
-		[Test]
-		public void SwitchesToHalfOpenWhenTimeOutIsReachedAfterOpening()
-		{
-			Action protectedCode = () => { throw new ApplicationException("blah"); };
+            // Assert
+            Assert.That(circuitBreaker.IsClosed);
+        }
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), 10);
-			Thread.Sleep(100);
-			Assert.That(circuitBreaker.IsHalfOpen);
-		}
+        [Test]
+        public void FailureTimeIsLoggedWhenProtectedCodeFails()
+        {
+            // Arrange
+            var now = DateTime.UtcNow;
+            var mockTimeProvider = MockRepository.GenerateMock<TimeProvider>();
+            mockTimeProvider.Expect(x => x.UtcNow).Return(now);
+            TimeProvider.Current = mockTimeProvider;
 
-		[Test]
-		public void OpensIfExceptionIsThrownInProtectedCodeWhenInHalfOpenState()
-		{
-			Action protectedCode = () => { throw new ApplicationException("blah"); };
+            Action protectedCode = () => { throw new ApplicationException("blah"); };
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), 10);
-			Thread.Sleep(100);
-			AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode));
-			Assert.That(circuitBreaker.IsOpen);
-		}
+            var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
 
-		[Test]
-		public void ClosesIfProtectedCodeSucceedsInHalfOpenState()
-		{
-			var stub = new Stub(10);
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(stub.DoStuff)), 10);
-			Thread.Sleep(100);
-			circuitBreaker.AttemptCall(stub.DoStuff);
-			Assert.That(circuitBreaker.IsClosed);
-		}
+            // Act
+            Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode));
 
-		[Test]
-		public void FailuresIsResetWhenCircuitBreakerCloses()
-		{
-			var stub = new Stub(10);
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(stub.DoStuff)), 10);
-			Assert.AreEqual(10, circuitBreaker.Failures);
-			Thread.Sleep(100);
-			circuitBreaker.AttemptCall(stub.DoStuff);
-			Assert.AreEqual(0, circuitBreaker.Failures);
-		}
+            // Assert
+            circuitBreaker.Failures.ShouldAllBeEquivalentTo(new[] { now });
+        }
 
-		[Test]
-		public void CanCloseCircuitBreaker()
-		{
-			Action protectedCode = () => { throw new ApplicationException("blah"); };
+        [Test]
+        public void FailuresIsNotIncreasedWhenProtectedCodeSucceeds()
+        {
+            // Arrange
+            Action protectedCode = () => { };
 
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50));
-			CallXAmountOfTimes(() => AssertThatExceptionIsThrown<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), 10);
-			Assert.That(circuitBreaker.IsOpen);
-			circuitBreaker.Close();
-			Assert.That(circuitBreaker.IsClosed);
-		}
+            var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
 
-		[Test]
-		public void CanOpenCircuitBreaker()
-		{
-			var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50));
-			Assert.That(circuitBreaker.IsClosed);
-			circuitBreaker.Open();
-			Assert.That(circuitBreaker.IsOpen);
-		}
-	}
+            // Act
+            circuitBreaker.AttemptCall(protectedCode);
 
-	class Stub
-	{
-		private readonly int timesToFail;
-		private int counter;
+            // Assert
+            Assert.That(circuitBreaker.Failures, Is.Empty);
+        }
 
-		public Stub(int timesToFail)
-		{
-			counter = 0;
-			this.timesToFail = timesToFail;
-		}
+        [Test]
+        public void NewCircuitBreakerIsClosed()
+        {
+            // Arrange
 
-		public void DoStuff()
-		{
-			if (++counter <= timesToFail)
-			{
-				throw new ApplicationException("blah");
-			}
-		}
-	}
+            // Act
+            var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+            // Assert
+            Assert.That(circuitBreaker.IsClosed);
+        }
+
+        [Test]
+        public void OpensWhenThresholdIsReachedWithinPeriod()
+        {
+            // Arrange
+            Action protectedCode = () => { throw new ApplicationException("blah"); };
+
+            const int threshold = 10;
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+            // Act
+            CallMultipleTimes(
+                () => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), threshold);
+
+            // Assert
+            Assert.That(circuitBreaker.IsOpen);
+        }
+
+        [Test]
+        public void ThrowsOpenCircuitExceptionWhenCallIsAttemptedIfCircuitBreakerIsOpen()
+        {
+            // Arrange
+            Action protectedCode = () => { throw new ApplicationException("blah"); };
+            const int threshold = 10;
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+            // Act
+            CallMultipleTimes(
+                () => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), threshold);
+
+            // Assert
+            Assert.Throws<OpenCircuitException>(() => circuitBreaker.AttemptCall(protectedCode));
+        }
+
+        [Test]
+        public void SwitchesToHalfOpenWhenTimeOutIsReachedAfterOpening()
+        {
+            // Arrange
+            Action protectedCode = () => { throw new ApplicationException("blah"); };
+            const int threshold = 10;
+            var timeout = TimeSpan.FromMilliseconds(50);
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), timeout);
+
+            // Act
+            CallMultipleTimes(
+                () => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), threshold);
+            Thread.Sleep(TimeSpan.FromMilliseconds(100));
+
+            // Assert
+            Assert.That(circuitBreaker.IsHalfOpen);
+        }
+
+        [Test]
+        public void OpensIfExceptionIsThrownInProtectedCodeWhenInHalfOpenState()
+        {
+            // Arrange
+            Action protectedCode = () => { throw new ApplicationException("blah"); };
+            const int threshold = 10;
+            var timeout = TimeSpan.FromMilliseconds(50);
+
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), timeout);
+
+            // Act
+            CallMultipleTimes(
+                () => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode)), threshold);
+            Thread.Sleep(TimeSpan.FromMilliseconds(100));
+            Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(protectedCode));
+
+            // Assert
+            Assert.That(circuitBreaker.IsOpen);
+        }
+
+        [Test]
+        public void ClosesIfProtectedCodeSucceedsInHalfOpenState()
+        {
+            // Arrange
+            const int threshold = 10;
+            var timeout = TimeSpan.FromMilliseconds(50);
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), timeout);
+
+            // Act
+            CallMultipleTimes(() => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(
+                () => { throw new ApplicationException("blah"); })), threshold);
+
+            Thread.Sleep(100);
+            circuitBreaker.AttemptCall(() => { });
+
+            // Assert
+            Assert.That(circuitBreaker.IsClosed);
+        }
+
+        [Test]
+        public void FailuresAreClearedWhenCircuitBreakerCloses()
+        {
+            // Arrange
+            const int threshold = 10;
+            var timeout = TimeSpan.FromMilliseconds(50);
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), timeout);
+
+            // Act
+            CallMultipleTimes(() => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(
+                () => { throw new ApplicationException("blah"); })), threshold);
+
+            Thread.Sleep(100);
+            circuitBreaker.AttemptCall(() => { });
+
+            // Assert
+            Assert.That(circuitBreaker.Failures, Is.Empty);
+        }
+
+        [Test]
+        public void CanCloseCircuitBreaker()
+        {
+            // Arrange
+            const int threshold = 10;
+            var timeout = TimeSpan.FromMilliseconds(50);
+            var circuitBreaker = new CircuitBreaker(threshold, TimeSpan.FromMinutes(5), timeout);
+
+            CallMultipleTimes(() => Assert.Throws<ApplicationException>(() => circuitBreaker.AttemptCall(
+                () => { throw new ApplicationException("blah"); })), threshold);
+            Assert.That(circuitBreaker.IsOpen);
+
+            // Act
+            circuitBreaker.Close();
+
+            // Assert
+            Assert.That(circuitBreaker.IsClosed);
+        }
+
+        [Test]
+        public void CanOpenCircuitBreaker()
+        {
+            // Arrange
+            var circuitBreaker = new CircuitBreaker(10, TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(50));
+            Assert.That(circuitBreaker.IsClosed);
+
+            // Act
+            circuitBreaker.Open();
+
+            // Assert
+            Assert.That(circuitBreaker.IsOpen);
+        }
+    }
 }
